@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<title>Compost Pickup</title>
+	<meta name="viewport" content="initial-scale=1.0"><meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+  <!-- Adds JQuery library -->
+  <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.1.1/jquery.min.js"></script>
+  <!-- CSS style types for most divs in webpage -->
+	<style type="text/css">
+ #map {
+   height: 92%;
+   width: 100%;
+   position: relative;
+ }
+ .button {
+  height: 40px;
+  width: 200px;
+  margin-top: 8px;
+  margin-left: 12px
+ }
+ .coordinates {
+       background: rgba(0,0,0,0.8);
+       color: #fff;
+       position: absolute;
+       top: 55px;
+       left: 12px;
+       padding:6px 10px;
+       margin: 0;
+       font-size: 12px;
+       line-height: 16px;
+       border-radius: 3px;
+       display: none;
+   }
+    #directions-panel {
+       background: rgba(0,0,0,0.8);
+       color: #fff;
+       position: absolute;
+       bottom: 10%;
+       left: 12px;
+       padding:6px 10px;
+       margin: 0;
+       font-size: 15px;
+       line-height: 18px;
+       border-radius: 3px;
+   }
+   #custom-tools {
+    position: absolute;
+    top: 93%;
+    left: 220px;
+   }
+
+body {
+  color: #D0D3D4;
+  font-family: Verdana;
+  background-color: #186A3B;
+  margin: 0px;
+  height: 50vh;
+}
+</style>
+</head>
+<body>
+  <div style="height: 100vh";>
+      <div id="map">&nbsp;</div>
+      <pre id='summary-panel' class='coordinates'></pre>
+      <button class="button" id="submit">Get Directions <br> for these points</button>
+      <div id="custom-tools">
+      <input type="range" id="num-waypoints" min="5" max="23" value="23" step="1" onchange="showValue(this.value)">
+      <span id="range">23 Waypoints</span>
+      <br>
+      <input type="checkbox" id="drop-off" checked>Make the dump my final destination
+    </div>
+			<div id="directions-panel">Drag the doughnut to your current location
+			</div>
+</div>
+
+<script>
+var map;
+//all markers as they are made from Google Sheets data
+var markers;
+var eastPoly;
+var westPoly;
+//these are global because they depopulate as markers from each region are visited
+var eastMark = [];
+var westMark = [];
+//these are global so that previous directions displays can be removed
+var directionsService;
+var directionsDisplay;
+//array of visited markers so that icons can be changed
+var visitedMarkers = [];
+function initMap() {
+  map = new google.maps.Map(document.getElementById('map'), {
+    center: {lat: 44.45, lng: -93.16},
+    zoom: 9,
+    mapTypeId: google.maps.MapTypeId.ROADMAP
+    });
+  //listener recenters map on the location of a mouseclick
+  //and fills in the "long" and "lat" fields next to the map with those coordinates
+  var userPoint = new google.maps.Marker({
+    map: map,
+    position: {lat: 44.45, lng: -93.16},
+    icon: {
+            path: google.maps.SymbolPath.CIRCLE,
+            scale: 6,
+          },
+    draggable: true,
+    zIndex: 400
+  });
+  //resets transparency for all markers when point is dragged
+  google.maps.event.addListener(userPoint, 'dragstart', function(){
+    for(i in markers){
+      markers[i].setOpacity(0.3);
+    }
+  });
+  var userLoc = userPoint.getPosition();
+  //wherever user point lands finds closest 24 markers and makes opaque
+  google.maps.event.addListener(userPoint, 'dragend', function(e){
+    userLoc = e.latLng;
+    //toRemove==FALSE because these markers should not be removed from the total set until directions are requested
+    var closest24 = distMarkers(userLoc, false);
+    for(i in closest24){
+      closest24[i].setOpacity(1);
+    }
+  });
+  //makes the two polygons east and west of river
+  eastWestPoly();
+  //marker for dropoff zone
+  var compost = new google.maps.Marker({
+    map: map,
+    position: new google.maps.LatLng(44.4455536679256, -93.1874942779541),
+    icon: {url: "http://www.splook.com/Software/Compost_files/compost-logo.png",
+            scaledSize: {width: 32, height: 32}
+          },
+          zIndex: 1
+    });
+  //populates markers array with data from Sheets
+  getData();
+  //splits markers array into East and West markers
+  splitMarkersEastWest();
+
+  //find directions
+  document.getElementById('submit').addEventListener('click', function() {
+    //true so that these 24 are removed from the total set
+      var closest24 = distMarkers(userLoc, true);
+      //adds to display already visited markers
+      for(d in closest24){
+        visitedMarkers.push(closest24[d]);
+      }
+      //directions service between origin and 23 waypoints
+      getDir(closest24, userLoc);
+		});
+}
+
+function distMarkers(loc, toRemove){
+  var points;
+  //determines region of user location and gets appropriate array or markers
+  var isWest = google.maps.geometry.poly.containsLocation(loc, westPoly);
+  if(isWest){
+    points = westMark;
+  }
+  else
+    points = eastMark;
+  var distArr = [];
+  for(i=0; i<points.length; i++){
+    var arr = [points[i]];
+    var xy = points[i].getPosition();
+    var dist = getDistanceFromLatLonInKm(loc.lat(), loc.lng(), xy.lat(), xy.lng());
+    arr[1] = dist;
+    distArr.push(arr);
+  }
+  var returnArr = [];
+  distArr.sort(function (a,b){return a[1] - b[1]});
+  var numPts = document.getElementById("num-waypoints").value;
+  //populate returnArr with numPts closest markers
+  while(distArr.length > 0 && returnArr.length < numPts){
+    var markerAndDist = distArr.shift();
+    //put back marker only w/o dist
+    returnArr.push(markerAndDist[0]);
+  }
+  //array with selected markers removed
+  var newMarkArr = [];
+  for(g in distArr){
+    newMarkArr.push(distArr[g][0]);
+  }
+  //removes selected markers from global marker arrays
+  if(toRemove){
+    if(isWest){
+      westMark = newMarkArr;
+    }
+    else
+      eastMark = newMarkArr;
+  }
+  return returnArr;
+}
+
+function getDir(points, userLoc){
+  //removes previous set of directions from display
+  if(directionsDisplay != undefined){
+    directionsDisplay.setMap(null);
+  }
+  directionsService = new google.maps.DirectionsService;
+  directionsDisplay = new google.maps.DirectionsRenderer;
+  directionsDisplay.setMap(map);
+  //sets previously visited markers to a different icon
+  for(h=0; h<visitedMarkers.length; h++){
+    visitedMarkers[h].setIcon("http://maps.google.com/mapfiles/ms/icons/yellow-dot.png");
+    visitedMarkers[h].setVisible(true);
+  }
+  //sends addresses from each marker, not lat-long coords, to the directions Service
+  var addresses = [];
+  for(i=0; i<points.length; i++){
+    if(points[i] != null){
+      points[i].setVisible(false);
+      var title = points[i].getTitle();
+      addresses.push(title);
+    }
+  }
+  calculateAndDisplayRoute(directionsService, directionsDisplay, addresses, userLoc);
+}
+
+function eastWestPoly(){
+  var eastC = [[ -93.19779, 44.43923, 0.0 ], [ -93.22771, 44.43899, 0.0 ], [ -93.22964, 44.39, 0.0 ], [ -93.07969, 44.39, 0.0 ], [ -93.07969, 44.49834, 0.0 ], [ -93.09591, 44.49712, 0.0 ], [ -93.11145, 44.49103, 0.0 ], [ -93.13102, 44.48551, 0.0 ], [ -93.14405, 44.48053, 0.0 ], [ -93.14552, 44.47802, 0.0 ], [ -93.14934, 44.47278, 0.0 ], [ -93.15228, 44.46691, 0.0 ], [ -93.1571, 44.46484, 0.0 ], [ -93.15813, 44.46166, 0.0 ], [ -93.15925, 44.45988, 0.0 ], [ -93.16007, 44.4582, 0.0 ], [ -93.16074, 44.45699, 0.0 ], [ -93.16141, 44.45632, 0.0 ], [ -93.16244, 44.45513, 0.0 ], [ -93.16527, 44.45334, 0.0 ], [ -93.16861, 44.45312, 0.0 ], [ -93.1738, 44.45056, 0.0 ], [ -93.17807, 44.44713, 0.0 ], [ -93.18094, 44.4449, 0.0 ], [ -93.18589, 44.44501, 0.0 ], [ -93.19086, 44.44375, 0.0 ], [ -93.19402, 44.44051, 0.0 ]];
+  var eastCoords = [];
+  for(i=0; i<eastC.length; i++){
+    var vert = new google.maps.LatLng(eastC[i][1], eastC[i][0]);
+    eastCoords.push(vert);
+  }
+  var westC = [ [ -93.22771, 44.43908, 0.0 ], [ -93.19822, 44.43948, 0.0 ], [ -93.19436, 44.44089, 0.0 ], [ -93.1917, 44.44389, 0.0 ], [ -93.18784, 44.44481, 0.0 ], [ -93.18483, 44.44561, 0.0 ], [ -93.1814, 44.44518, 0.0 ], [ -93.17505, 44.45026, 0.0 ], [ -93.17076, 44.45232, 0.0 ], [ -93.16887, 44.4533, 0.0 ], [ -93.16548, 44.45354, 0.0 ], [ -93.16325, 44.45489, 0.0 ], [ -93.16123, 44.45688, 0.0 ], [ -93.15961, 44.4598, 0.0 ], [ -93.15763, 44.46488, 0.0 ], [ -93.15278, 44.46708, 0.0 ], [ -93.14913, 44.47382, 0.0 ], [ -93.14466, 44.48095, 0.0 ], [ -93.13042, 44.48607, 0.0 ], [ -93.11213, 44.49124, 0.0 ], [ -93.10883, 44.49439, 0.0 ], [ -93.09596, 44.4973, 0.0 ], [ -93.08823, 44.49843, 0.0 ], [ -93.22981, 44.49724, 0.0 ]];
+  var westCoords = [];
+  for(i=0; i<westC.length; i++){
+    var vert = new google.maps.LatLng(westC[i][1], westC[i][0]);
+    westCoords.push(vert);
+  }
+  //only polygon outlines are visible
+  eastPoly = new google.maps.Polygon({
+        paths: eastCoords,
+        strokeColor: 'black',
+        strokeOpacity: 0.6,
+        strokeWeight: 1,
+        fillColor: 'red',
+        fillOpacity: 0,
+        visible: true,
+        map: map
+      });
+  westPoly = new google.maps.Polygon({
+        paths: westCoords,
+        strokeColor: 'black',
+        strokeOpacity: 0.6,
+        strokeWeight: 1,
+        fillColor: 'green',
+        fillOpacity: 0,
+        visible: true,
+        map: map
+      });
+}
+
+function splitMarkersEastWest(){
+  for(k=0; k<markers.length; k++){
+      var point = markers[k].getPosition();
+      if(google.maps.geometry.poly.containsLocation(point, eastPoly)){
+        eastMark.push(markers[k]);
+      }
+    }
+
+    for(k=0; k<markers.length; k++){
+      var point = markers[k].getPosition();
+      if(google.maps.geometry.poly.containsLocation(point, westPoly)){
+        westMark.push(markers[k]);
+      }
+    }
+}
+
+function getData(){
+      //array of Marker objects
+      var markerArr = [];
+      //array of Google LatLng objects
+      var pointsArr = [];
+      //array of short addresses (for info window)
+      var shortAddArr = [];
+      //array of nameArrs (first/last names)
+      var titleArr = [];
+      //array of full addresses (for directions API)
+      var addressArr = [];
+      //array of phone numbers (for info window)
+      var phoneArr = [];
+      var emailArr = [];
+      var spreadsheetID = "1acKgwiNSCiq45X5Dx5fXfDvIKoVvrmngRO_eU9ssRqI";
+      var url = "https://spreadsheets.google.com/feeds/list/" + spreadsheetID + "/1/public/values?alt=json";
+      //jquery function to grab lat and long values from Google Sheet
+      $.ajax({
+        url: url,
+        dataType: 'json',
+        async: false,
+        success: function(data) {
+        var entry = data.feed.entry;
+        //array to enter two values: a Lat and a Long
+        var coordArr = [];
+        var nameArr = [];
+        //This loop iterates through every row in the database and pushes a value for every attribute into their arrays
+        //jquery commands extract values from each row by column name
+        $(entry).each(function(){
+          coordArr[0] = this.gsx$lat.$t;
+          coordArr[1] = this.gsx$lon.$t;
+          var coords = "";
+					var shortAddStr = this.gsx$address.$t;
+					//if row has not been properly geocoded, nothing is added to the arrays
+          if(shortAddStr != ""){
+          coords = new google.maps.LatLng(coordArr[0], coordArr[1]);
+          //adds each LatLng object to array within jquery loop
+          pointsArr.push(coords);
+          shortAddArr.push(shortAddStr);
+          nameArr[0] = this.gsx$firstname.$t;
+          nameArr[1] = this.gsx$lastname.$t;
+          var fullName = nameArr[0] + " " + nameArr[1];
+          titleArr.push(fullName);
+          var addressStr = this.gsx$fulladdress.$t;
+          addressArr.push(addressStr);
+          var phoneNum = this.gsx$phonenumber.$t;
+          phoneArr.push(phoneNum);
+          var emailStr = this.gsx$contact.$t;
+          emailArr.push(emailStr);
+				}
+        });
+        //This loop pops objects from each array and and creates a new marker/infowindow with the attributes from each pokemon
+        while(pointsArr.length > 0){
+          var coordPair = pointsArr.pop();
+          var shortAdd = shortAddArr.pop();
+          var names = titleArr.pop();
+          var address = addressArr.pop();
+          var phone = phoneArr.pop();
+          var email = emailArr.pop();
+          var newMark = addMarker(coordPair, map, shortAdd, names, address, phone, email);
+          markerArr.push(newMark);
+        }
+      }
+      });
+markers = markerArr;
+}
+
+function addMarker(location, map, shortAdd, name, address, phoneNum, email) {
+  if(shortAdd != "" && location != ""){
+  var mark = new google.maps.Marker({
+    position: location,
+    map: map,
+    //title = address so that the directions service can use getTitle() to retrieve address
+    title: address,
+    visible: true,
+    opacity: 0.3
+  });
+  //in second part creates infowindow with description formatting and attributes
+  var bubble = new google.maps.InfoWindow({
+    content: '<div style="float: left; color: black;"> <h2>' + shortAdd + '</h2>' + '<b>Name: </b>' + name + '<br><b>Phone: </b>' + phoneNum + '<br><b>Email: </b>' + email + '</div>'
+  });
+  //Creates click listener that assigns infoWindow to each marker
+  mark.addListener('click', function() {
+    bubble.open(map, mark);
+  });
+  return mark;
+}
+}
+
+
+function calculateAndDisplayRoute(directionsService, directionsDisplay, pts, userLoc) {
+  var waypts = [];
+  var dropOff;
+  //destination is either dump area
+  var checkDropOff = document.getElementById("drop-off");
+  if(checkDropOff.checked){
+  dropOff = new google.maps.LatLng(44.446515, -93.188343);
+}
+else
+  //or destination is the marker FARTHEST from the user location (last in the sorted array)
+  dropOff = pts.pop();
+  for (var i = 0; i < pts.length; i++) {
+      if(pts[i] != null){
+      waypts.push({
+        location: pts[i],
+        stopover: true
+      });
+    }
+  }
+  directionsService.route({
+    origin: userLoc,
+    destination: dropOff,
+    waypoints: waypts,
+    optimizeWaypoints: true,
+    travelMode: 'DRIVING'
+  }, function(response, status) {
+    if (status === 'OK') {
+      directionsDisplay.setDirections(response);
+      var route = response.routes[0];
+      var totalDist = 0;
+      var totalDur = 0;
+      var summaryPanel = document.getElementById('summary-panel');
+      summaryPanel.style.display = 'block';
+      var tripInfo = document.getElementById('directions-panel');
+      tripInfo.innerHTML = '';
+      summaryPanel.innerHTML = '';
+      // Displays the address of each stop in summaryPanel
+      for (var i = 0; i < route.legs.length; i++) {
+        var routeSegment = i + 1;
+        //cumulates distance and duration values from directions response JSON
+        totalDist += route.legs[i].distance.value;
+        totalDur += route.legs[i].duration.value;
+        var endAddress = route.legs[i].end_address;
+        summaryPanel.innerHTML += routeSegment + '. <b>' + endAddress.substring(0, endAddress.length-27) + '</b><br>';
+      }
+      //displays total distance and duration in trip info box
+      tripInfo.innerHTML = 'Total duration: ' + Math.ceil(totalDur/60) + ' minutes<br>' + 'Total distance: ' + Math.ceil(totalDist/100)/10 + ' kilometers';
+    } else {
+      window.alert('Directions request failed due to ' + status);
+    }
+  });
+}
+//spherical distance calculator (tbh euclidean would have been enough) for sorting markers by distance
+function getDistanceFromLatLonInKm(lat1,lon1,lat2,lon2) {
+  var R = 6371; // Radius of the earth in km
+  var dLat = deg2rad(lat2-lat1);  // deg2rad below
+  var dLon = deg2rad(lon2-lon1);
+  var a =
+    Math.sin(dLat/2) * Math.sin(dLat/2) +
+    Math.cos(deg2rad(lat1)) * Math.cos(deg2rad(lat2)) *
+    Math.sin(dLon/2) * Math.sin(dLon/2)
+    ;
+  var c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  var d = R * c; // Distance in km
+  return d;
+}
+
+function deg2rad(deg) {
+  return deg * (Math.PI/180)
+}
+//for waypoints slider
+function showValue(newValue)
+{
+  document.getElementById("range").innerHTML=newValue + " Waypoints";
+}
+//Google Maps API url with callback
+</script><script async defer src="https://maps.googleapis.com/maps/api/js?key=AIzaSyBrsCrGDzdrNEeDW5dHNJ6GG7fMyV7Oi0E&libraries=geometry&callback=initMap"></script></body>
+</html>
