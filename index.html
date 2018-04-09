@@ -397,7 +397,7 @@ else
       summaryPanel.innerHTML = '';
       // Displays the address of each stop in summaryPanel
       for (var i = 0; i < route.legs.length; i++) {
-        var routeSegment = String.fromCharCode(97 + i)
+        var routeSegment = String.fromCharCode(98 + i)
         //cumulates distance and duration values from directions response JSON
         totalDist += route.legs[i].distance.value;
         totalDur += route.legs[i].duration.value;
